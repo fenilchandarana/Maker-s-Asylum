@@ -4,7 +4,7 @@
 
 // Wi-Fi Credentials
 const char* ssid = "admin";
-const char* password = "12345678";
+const char* password = "12345678";  
 
 // LED Ring Setup
 #define LED_PIN     13
@@ -22,7 +22,7 @@ void setup() {
   // Initialize LED strip
   strip.begin();
   strip.show();
-  strip.setBrightness(50);
+  strip.setBrightness(16);
 
   // Connect to Wi-Fi
   Serial.println("Connecting to WiFi...");
