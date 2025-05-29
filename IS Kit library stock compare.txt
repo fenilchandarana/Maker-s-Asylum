@@ -1,0 +1,52 @@
+function compareStockAndRequirements() {
+  const inventorySS = SpreadsheetApp.openByUrl("https://docs.google.com/spreadsheets/d/1p5T6TysP_d3Do_z2yPsInNWCMLtzSFAOLSnZVKXSiFE/edit");
+  const librarySS = SpreadsheetApp.openByUrl("https://docs.google.com/spreadsheets/d/1SZ3NWWyd0J3OZcer1CWrVScCRUWcOg8jzDQNWenVaZc/edit");
+
+  const stockTab = inventorySS.getSheetByName("Live Stock");
+  const kitTab = librarySS.getSheetByName("IS Kit");
+
+  // Get stock data
+  const stockData = stockTab.getRange(2, 2, stockTab.getLastRow() - 1, 3).getValues(); // B to D
+  const stockMap = {};
+  stockData.forEach(row => {
+    const sku = row[0]?.toString().trim();
+    const qty = Number(row[2]);
+    if (sku) stockMap[sku] = qty;
+  });
+
+  const lastRow = kitTab.getLastRow();
+  const skus = kitTab.getRange(10, 2, lastRow - 9).getValues(); // column B
+  const reqs = kitTab.getRange(10, 4, lastRow - 9).getValues(); // column D
+
+  const results = [];
+  const colors = [];
+
+  for (let i = 0; i < skus.length; i++) {
+    const sku = skus[i][0]?.toString().trim();
+    const reqQty = Number(reqs[i][0]);
+
+    if (!sku || isNaN(reqQty)) {
+      results.push(["Invalid SKU or Qty"]);
+      colors.push(["#FF0000"]); // red
+      continue;
+    }
+
+    const availableQty = stockMap[sku];
+
+    if (availableQty === undefined) {
+      results.push(["Not in stock"]);
+      colors.push(["#FF0000"]); // red
+    } else if (availableQty >= reqQty) {
+      const excess = availableQty - reqQty;
+      results.push([`Available, excess by ${excess}`]);
+      colors.push(["#00AA00"]); // green
+    } else {
+      results.push([`Short by ${reqQty - availableQty}`]);
+      colors.push(["#FF0000"]); // red
+    }
+  }
+
+  const statusRange = kitTab.getRange(10, 8, results.length, 1); // column H
+  statusRange.setValues(results);
+  statusRange.setFontColors(colors);
+}

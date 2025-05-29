@@ -1,0 +1,96 @@
+function aggregateInventoryData() {
+  const sheetNames = [
+    "Electronics",
+    "PCB & Soldering",
+    "IOT",
+    "Virtual Reality",
+    "Design",
+    "Big Kit"
+  ];
+
+  const destSheetName = "IS Kit";
+  const multiplierRange = "A2:B7";  // Now includes sheet names and values
+  const outputStartCell = "B10";
+  const patterns = /^(ISEL|ISGN|ISPK|ISOF|ISGP|ISEP)/;  // Match SKUs starting with these patterns
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let outputSheet = ss.getSheetByName(destSheetName);
+  if (!outputSheet) {
+    outputSheet = ss.insertSheet(destSheetName);
+  }
+
+  // Read multiplier map from column A (sheet names) and B (multiplier values)
+  const multiplierData = outputSheet.getRange(multiplierRange).getValues();
+  const multiplierMap = new Map(
+    multiplierData.map(([name, value]) => [String(name).trim(), Number(value)])
+  );
+
+  const aggregated = new Map();
+
+  for (let tabName of sheetNames) {
+    const sheet = ss.getSheetByName(tabName);
+    if (!sheet) continue;
+
+    const multiplier = multiplierMap.get(tabName) || 1;
+    const data = sheet.getRange("B2:H" + sheet.getLastRow()).getValues();
+
+    for (let row of data) {
+      const [sku, category, qty, , f, g, h] = row;
+
+      if (
+        typeof sku === "string" &&
+        patterns.test(sku.trim()) &&
+        typeof qty === "number" &&
+        qty > 0
+      ) {
+        const adjustedQty = qty * multiplier;
+        const key = `${sku.trim()}||${category}`;
+
+        if (!aggregated.has(key)) {
+          aggregated.set(key, {
+            sku: sku.trim(),
+            category,
+            quantity: adjustedQty,
+            f,
+            g,
+            h
+          });
+        } else {
+          const existing = aggregated.get(key);
+          existing.quantity += adjustedQty;
+          existing.f = existing.f || f;
+          existing.g = existing.g || g;
+          existing.h = existing.h || h;
+        }
+      }
+    }
+  }
+
+  const startRange = outputSheet.getRange(outputStartCell);
+  const startRow = startRange.getRow();
+  const startCol = startRange.getColumn();
+
+  // Clear old data from columns A–G
+  const lastRow = outputSheet.getLastRow();
+  if (lastRow >= startRow) {
+    outputSheet.getRange(startRow, 1, lastRow - startRow + 1, 7).clearContent();
+  }
+
+  const rows = Array.from(aggregated.values()).map(item => [
+    item.sku,
+    item.category,
+    item.quantity,
+    item.f,
+    item.g,
+    item.h
+  ]);
+
+  if (rows.length > 0) {
+    // Write main data to columns B–G
+    outputSheet.getRange(startRow, startCol, rows.length, 6).setValues(rows);
+
+    // Write serial numbers to column A
+    const serials = rows.map((_, i) => [i + 1]);
+    outputSheet.getRange(startRow, 1, rows.length, 1).setValues(serials);
+  }
+}

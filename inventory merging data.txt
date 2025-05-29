@@ -1,0 +1,238 @@
+function processAllData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const scanSheet = ss.getSheetByName("Scan-IT to Office");
+  const referenceSheet = ss.getSheetByName("Reference");
+  const inSheet = ss.getSheetByName("IN");
+  const outSheet = ss.getSheetByName("OUT");
+  const liveStockSheet = ss.getSheetByName("Live Stock");
+  const idealLiveStockSheet = ss.getSheetByName("Ideal Live Stock");
+  const qcSheet = ss.getSheetByName("Quality Check");
+  const packsSheet = ss.getSheetByName("Packs");
+  const livePacksSheet = ss.getSheetByName("Live Packs");
+  const isKitSheet = ss.getSheetByName("IS Kit");
+
+  const scanData = scanSheet.getDataRange().getValues();
+  const referenceData = referenceSheet.getDataRange().getValues();
+
+  const skuToProduct = {};
+  const barcodeToSKU = {};
+  const packQuantities = {};
+  const packPrefixCount = {};
+
+  for (let i = 1; i < referenceData.length; i++) {
+    const sku = referenceData[i][1];
+    const barcode = referenceData[i][2];
+    const product = referenceData[i][3];
+    const qtyInPack = referenceData[i][4];
+    const barcodePrefix = barcode.split("-").slice(0, 2).join("-");
+    skuToProduct[sku] = product;
+    barcodeToSKU[barcodePrefix] = sku;
+    if (qtyInPack && !isNaN(qtyInPack)) {
+      packQuantities[sku] = qtyInPack;
+    }
+  }
+
+  const seenQCBarcodes = new Set();
+  const seenPackBarcodes = new Set();
+  const seenKitBarcodes = new Set();
+
+  let errors = [];
+
+  for (let i = 1; i < scanData.length; i++) {
+    const [code, qty, dateTime, type, person, kitSerial] = scanData[i];
+    const rowNum = i + 1;
+    const parts = code.split("-");
+    if (!code || !type) continue;
+
+    if (type === "IN") {
+      if (parts.length === 3) {
+        errors.push(`Row ${rowNum}: IN type must use SKU, not barcode (${code}).`);
+        continue;
+      }
+      if (!skuToProduct[code]) {
+        errors.push(`Row ${rowNum}: Unknown SKU for IN (${code}).`);
+        continue;
+      }
+    } else if (type === "QC") {
+      if (parts.length !== 3) {
+        errors.push(`Row ${rowNum}: QC type must use full barcode (${code}).`);
+        continue;
+      }
+      if (seenQCBarcodes.has(code)) {
+        errors.push(`Row ${rowNum}: Duplicate barcode in QC (${code}).`);
+        continue;
+      }
+      seenQCBarcodes.add(code);
+    } else if (type === "PACK") {
+      if (parts.length !== 3) {
+        errors.push(`Row ${rowNum}: PACK type must use full barcode (${code}).`);
+        continue;
+      }
+      if (!code.startsWith("ISPA")) {
+        errors.push(`Row ${rowNum}: PACK barcode must start with ISPA (${code}).`);
+        continue;
+      }
+      if (seenPackBarcodes.has(code)) {
+        errors.push(`Row ${rowNum}: Duplicate barcode in PACK (${code}).`);
+        continue;
+      }
+      seenPackBarcodes.add(code);
+    } else if (type === "KIT") {
+      if (parts.length !== 3) {
+        errors.push(`Row ${rowNum}: KIT type must use barcode, not SKU (${code}).`);
+        continue;
+      }
+      if (seenKitBarcodes.has(code)) {
+        errors.push(`Row ${rowNum}: Duplicate barcode in KIT (${code}).`);
+        continue;
+      }
+      seenKitBarcodes.add(code);
+    }
+  }
+
+  if (errors.length > 0) {
+    errors.forEach(e => console.log(e));
+    console.log("❌ Processing aborted due to errors.");
+    return;
+  }
+
+  for (let i = 1; i < scanData.length; i++) {
+    const [code, qty, dateTime, type, person, kitSerial] = scanData[i];
+    if (!code || !type) continue;
+    const parts = code.split("-");
+    const prefix = parts.slice(0, 2).join("-");
+    const sku = prefix;
+    const product = skuToProduct[sku] || "Unknown";
+
+    if (type === "IN") {
+      inSheet.appendRow([inSheet.getLastRow(), dateTime, code, product, qty]);
+      const liveData = liveStockSheet.getDataRange().getValues();
+      let found = false;
+      for (let j = 1; j < liveData.length; j++) {
+        if (liveData[j][1] === code) {
+          liveStockSheet.getRange(j + 1, 4).setValue(liveData[j][3] + qty);
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        liveStockSheet.appendRow([liveStockSheet.getLastRow(), code, product, qty]);
+      }
+
+    } else if (type === "OUT") {
+      outSheet.appendRow([outSheet.getLastRow(), dateTime, code, product, qty, person]);
+      const liveData = liveStockSheet.getDataRange().getValues();
+      for (let j = 1; j < liveData.length; j++) {
+        if (liveData[j][1] === code) {
+          liveStockSheet.getRange(j + 1, 4).setValue(liveData[j][3] - qty);
+          break;
+        }
+      }
+
+    } else if (type === "QC") {
+      qcSheet.appendRow([qcSheet.getLastRow(), dateTime, code, product, person, ""]);
+
+    } else if (type === "PACK") {
+      packsSheet.appendRow([packsSheet.getLastRow(), dateTime, code, qty, person]);
+      const liveData = livePacksSheet.getDataRange().getValues();
+      let found = false;
+      for (let j = 1; j < liveData.length; j++) {
+        if (liveData[j][1] === prefix) {
+          livePacksSheet.getRange(j + 1, 3).setValue(liveData[j][2] + qty);
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        livePacksSheet.appendRow([livePacksSheet.getLastRow(), prefix, qty]);
+      }
+
+    } else if (type === "KIT") {
+      if (sku.startsWith("ISPA")) {
+        if (!packPrefixCount[sku]) packPrefixCount[sku] = 0;
+        packPrefixCount[sku] += qty;
+
+        const packSKUs = referenceData.filter(row => row[2].startsWith(sku)).map(row => ({
+          sku: row[1],
+          product: row[3],
+          qtyInPack: row[4]
+        }));
+
+        for (const item of packSKUs) {
+          const totalQty = item.qtyInPack * qty;
+          isKitSheet.appendRow([isKitSheet.getLastRow(), dateTime, kitSerial, item.sku, code, item.product, totalQty, dateTime, person]);
+
+          const liveData = liveStockSheet.getDataRange().getValues();
+          for (let j = 1; j < liveData.length; j++) {
+            if (liveData[j][1] === item.sku) {
+              liveStockSheet.getRange(j + 1, 4).setValue(liveData[j][3] - totalQty);
+              break;
+            }
+          }
+
+          outSheet.appendRow([outSheet.getLastRow(), dateTime, item.sku, item.product, totalQty, person]);
+        }
+
+        const packData = packsSheet.getDataRange().getValues();
+        for (let j = 1; j < packData.length; j++) {
+          if (packData[j][2] === code) {
+            packsSheet.getRange(j + 1, 6).setValue(kitSerial);
+            break;
+          }
+        }
+
+      } else {
+        isKitSheet.appendRow([isKitSheet.getLastRow(), dateTime, kitSerial, sku, code, product, qty, dateTime, person]);
+
+        const liveData = liveStockSheet.getDataRange().getValues();
+        for (let j = 1; j < liveData.length; j++) {
+          if (liveData[j][1] === sku) {
+            liveStockSheet.getRange(j + 1, 4).setValue(liveData[j][3] - qty);
+            break;
+          }
+        }
+
+        outSheet.appendRow([outSheet.getLastRow(), dateTime, sku, product, qty, person]);
+      }
+    }
+  }
+
+  const livePackData = livePacksSheet.getDataRange().getValues();
+  for (let i = 1; i < livePackData.length; i++) {
+    const packSKU = livePackData[i][1];
+    if (packPrefixCount[packSKU]) {
+      const currentQty = livePackData[i][2];
+      const usedQty = packPrefixCount[packSKU];
+      livePacksSheet.getRange(i + 1, 3).setValue(currentQty - usedQty);
+    }
+  }
+
+  // Highlight Live Stock qtys
+  const liveData = liveStockSheet.getDataRange().getValues();
+  const idealData = idealLiveStockSheet.getDataRange().getValues();
+  const skuToThresholds = {};
+  for (let i = 1; i < idealData.length; i++) {
+    skuToThresholds[idealData[i][1]] = {
+      green: idealData[i][3],
+      orange: idealData[i][4],
+      red: idealData[i][5]
+    };
+  }
+  for (let i = 1; i < liveData.length; i++) {
+    const sku = liveData[i][1];
+    const qty = liveData[i][3];
+    const thresholds = skuToThresholds[sku];
+    if (!thresholds) continue;
+    const cell = liveStockSheet.getRange(i + 1, 4);
+    if (qty <= thresholds.red) {
+      cell.setBackground("red");
+    } else if (qty <= thresholds.orange) {
+      cell.setBackground("orange");
+    } else {
+      cell.setBackground("green");
+    }
+  }
+
+  scanSheet.getRange(2, 1, scanSheet.getLastRow() - 1, scanSheet.getLastColumn()).clearContent();
+  console.log("✅ Processing completed successfully.");
+}
