@@ -16,7 +16,7 @@ function compareStockAndRequirements() {
 
   const lastRow = kitTab.getLastRow();
   const skus = kitTab.getRange(10, 2, lastRow - 9).getValues(); // column B
-  const reqs = kitTab.getRange(10, 4, lastRow - 9).getValues(); // column D
+  const reqs = kitTab.getRange(10, 5, lastRow - 9).getValues(); // column E
 
   const results = [];
   const colors = [];
@@ -46,7 +46,7 @@ function compareStockAndRequirements() {
     }
   }
 
-  const statusRange = kitTab.getRange(10, 8, results.length, 1); // column H
+  const statusRange = kitTab.getRange(10, 10, results.length, 1); // column J
   statusRange.setValues(results);
   statusRange.setFontColors(colors);
 }

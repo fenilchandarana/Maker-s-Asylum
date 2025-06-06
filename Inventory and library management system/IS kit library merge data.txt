@@ -5,13 +5,17 @@ function aggregateInventoryData() {
     "IOT",
     "Virtual Reality",
     "Design",
-    "Big Kit"
+    "Big Kit",
+    "Electronics v2"
   ];
 
-  const destSheetName = "IS Kit";
-  const multiplierRange = "A2:B7";  // Now includes sheet names and values
-  const outputStartCell = "B10";
-  const patterns = /^(ISEL|ISGN|ISPK|ISOF|ISGP|ISEP)/;  // Match SKUs starting with these patterns
+  // const destSheetName = "IS Kit";
+  const destSheetName = "IS Kit Fabrication";
+  const multiplierRange = "A2:B8";  // Sheet names and multipliers
+  const outputStartCell = "B11";
+  // const patterns = /^(ISEL|ISGN|ISPG|ISOF|ISGP|ISEP)/;
+  const patterns = /^(ISIF|ISIP)/;
+  // const patterns = /^(ISEL|ISGN|ISPG|ISOF|ISGP|ISEP|ISIF|ISIP)/;
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let outputSheet = ss.getSheetByName(destSheetName);
@@ -19,7 +23,6 @@ function aggregateInventoryData() {
     outputSheet = ss.insertSheet(destSheetName);
   }
 
-  // Read multiplier map from column A (sheet names) and B (multiplier values)
   const multiplierData = outputSheet.getRange(multiplierRange).getValues();
   const multiplierMap = new Map(
     multiplierData.map(([name, value]) => [String(name).trim(), Number(value)])
@@ -31,11 +34,13 @@ function aggregateInventoryData() {
     const sheet = ss.getSheetByName(tabName);
     if (!sheet) continue;
 
-    const multiplier = multiplierMap.get(tabName) || 1;
-    const data = sheet.getRange("B2:H" + sheet.getLastRow()).getValues();
+    const multiplier = multiplierMap.has(tabName) ? multiplierMap.get(tabName) : 1;
+    if (multiplier === 0) continue;
+
+    const data = sheet.getRange("B2:I" + sheet.getLastRow()).getValues();  // B to I now
 
     for (let row of data) {
-      const [sku, category, qty, , f, g, h] = row;
+      const [sku, barcode, category, qty, spec, refLink, designFile, qcBenchmark] = row;
 
       if (
         typeof sku === "string" &&
@@ -44,23 +49,26 @@ function aggregateInventoryData() {
         qty > 0
       ) {
         const adjustedQty = qty * multiplier;
-        const key = `${sku.trim()}||${category}`;
+        const key = `${sku.trim()}||${barcode}||${category}`;
 
         if (!aggregated.has(key)) {
           aggregated.set(key, {
             sku: sku.trim(),
+            barcode,
             category,
             quantity: adjustedQty,
-            f,
-            g,
-            h
+            spec,
+            refLink,
+            designFile,
+            qcBenchmark
           });
         } else {
           const existing = aggregated.get(key);
           existing.quantity += adjustedQty;
-          existing.f = existing.f || f;
-          existing.g = existing.g || g;
-          existing.h = existing.h || h;
+          existing.spec = existing.spec || spec;
+          existing.refLink = existing.refLink || refLink;
+          existing.designFile = existing.designFile || designFile;
+          existing.qcBenchmark = existing.qcBenchmark || qcBenchmark;
         }
       }
     }
@@ -70,24 +78,26 @@ function aggregateInventoryData() {
   const startRow = startRange.getRow();
   const startCol = startRange.getColumn();
 
-  // Clear old data from columns A–G
+  // Clear old data from columns A–I
   const lastRow = outputSheet.getLastRow();
   if (lastRow >= startRow) {
-    outputSheet.getRange(startRow, 1, lastRow - startRow + 1, 7).clearContent();
+    outputSheet.getRange(startRow, 1, lastRow - startRow + 1, 9).clearContent();  // A to I
   }
 
   const rows = Array.from(aggregated.values()).map(item => [
     item.sku,
+    item.barcode,
     item.category,
     item.quantity,
-    item.f,
-    item.g,
-    item.h
+    item.spec,
+    item.refLink,
+    item.designFile,
+    item.qcBenchmark
   ]);
 
   if (rows.length > 0) {
-    // Write main data to columns B–G
-    outputSheet.getRange(startRow, startCol, rows.length, 6).setValues(rows);
+    // Write data to columns B–I
+    outputSheet.getRange(startRow, startCol, rows.length, 8).setValues(rows);
 
     // Write serial numbers to column A
     const serials = rows.map((_, i) => [i + 1]);
