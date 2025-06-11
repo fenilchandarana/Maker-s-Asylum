@@ -9,13 +9,10 @@ function aggregateInventoryData() {
     "Electronics v2"
   ];
 
-  // const destSheetName = "IS Kit";
-  const destSheetName = "IS Kit Fabrication";
+  const destSheetName = "IS Kit";
   const multiplierRange = "A2:B8";  // Sheet names and multipliers
   const outputStartCell = "B11";
-  // const patterns = /^(ISEL|ISGN|ISPG|ISOF|ISGP|ISEP)/;
-  const patterns = /^(ISIF|ISIP)/;
-  // const patterns = /^(ISEL|ISGN|ISPG|ISOF|ISGP|ISEP|ISIF|ISIP)/;
+  const patterns = /^(ISEL|ISGN|ISPG|ISOF|ISGP|ISEP)/;
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let outputSheet = ss.getSheetByName(destSheetName);
@@ -37,7 +34,7 @@ function aggregateInventoryData() {
     const multiplier = multiplierMap.has(tabName) ? multiplierMap.get(tabName) : 1;
     if (multiplier === 0) continue;
 
-    const data = sheet.getRange("B2:I" + sheet.getLastRow()).getValues();  // B to I now
+    const data = sheet.getRange("B2:I" + sheet.getLastRow()).getValues();  // B to I
 
     for (let row of data) {
       const [sku, barcode, category, qty, spec, refLink, designFile, qcBenchmark] = row;
@@ -49,14 +46,14 @@ function aggregateInventoryData() {
         qty > 0
       ) {
         const adjustedQty = qty * multiplier;
-        const key = `${sku.trim()}||${barcode}||${category}`;
+        const key = `${sku.trim()}||${category}`;
 
         if (!aggregated.has(key)) {
           aggregated.set(key, {
             sku: sku.trim(),
-            barcode,
             category,
             quantity: adjustedQty,
+            barcodes: new Set(barcode ? [barcode] : []),
             spec,
             refLink,
             designFile,
@@ -65,6 +62,7 @@ function aggregateInventoryData() {
         } else {
           const existing = aggregated.get(key);
           existing.quantity += adjustedQty;
+          if (barcode) existing.barcodes.add(barcode);
           existing.spec = existing.spec || spec;
           existing.refLink = existing.refLink || refLink;
           existing.designFile = existing.designFile || designFile;
@@ -81,12 +79,12 @@ function aggregateInventoryData() {
   // Clear old data from columns A–I
   const lastRow = outputSheet.getLastRow();
   if (lastRow >= startRow) {
-    outputSheet.getRange(startRow, 1, lastRow - startRow + 1, 9).clearContent();  // A to I
+    outputSheet.getRange(startRow, 1, lastRow - startRow + 1, 9).clearContent();
   }
 
   const rows = Array.from(aggregated.values()).map(item => [
     item.sku,
-    item.barcode,
+    [...item.barcodes].join('\n'),  // Join barcodes with line breaks
     item.category,
     item.quantity,
     item.spec,
