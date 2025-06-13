@@ -2,7 +2,7 @@
 #include <Adafruit_NeoPixel.h>
 
 // Wi-Fi Credentials
-const char* ssid = "ajith";
+const char* ssid = "admin";
 const char* password = "12345678";
 
 // LED Ring Setup
