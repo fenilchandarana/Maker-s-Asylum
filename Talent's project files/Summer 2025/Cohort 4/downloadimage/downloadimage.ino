@@ -7,11 +7,11 @@
 #include "camera_pins.h"
 
 // Wi-Fi credentials
-const char* ssid = "admin";
-const char* password = "12345678";
+const char* ssid = "MuSo-Guest";
+const char* password = "MuSo-JSW@360";
 
 // Optional: Set static IP
-IPAddress local_IP(192, 168, 137, 235);
+IPAddress local_IP(192, 168, 0, 245);
 IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
 

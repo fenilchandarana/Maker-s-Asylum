@@ -1,6 +1,6 @@
 import requests
 
-esp_ip = "192.168.137.235"
+esp_ip = "192.168.0.245"
 url = f"http://{esp_ip}/photo"
 
 try:
