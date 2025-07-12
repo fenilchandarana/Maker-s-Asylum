@@ -1,5 +1,6 @@
 #include <MD_MAX72xx.h>
 #include <SPI.h>
+#include "animations.h"
 
 #define NUM_ROWS 16
 #define NUM_COLS 8
@@ -14,7 +15,7 @@
 
 MD_MAX72XX mx = MD_MAX72XX(HARDWARE_TYPE, DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
 
-// Outline
+// Static parts
 const uint8_t outlineTop[8] = {
   0xFF, 0x81, 0x81, 0x81, 0x81, 0x42, 0x24, 0x18
 };
@@ -23,22 +24,16 @@ const uint8_t outlineBottom[8] = {
   0x18, 0x24, 0x42, 0x81, 0x81, 0x81, 0x81, 0xFF
 };
 
-// Filled sand
 const uint8_t filledTop[8] = {
   0xFF, 0x81, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C, 0x18
 };
 
-// Trickled version
-const uint8_t trailTop[8] = {
-  0xFF, 0x81, 0xFF, 0xFF, 0xFF, 0x7E, 0x34, 0x18
-};
-
-const uint8_t trailBottom[8] = {
-  0x18, 0x24, 0x42, 0x81, 0x81, 0x81, 0x89, 0xFF
-};
-
-const uint8_t finalTop[8] = {
-  0xFF, 0x81, 0xF7, 0xFF, 0xFF, 0x7E, 0x3C, 0x18
+// Grain struct for multiple grains
+struct Grain {
+  uint8_t dstRow;
+  uint8_t dstCol;
+  uint8_t currentRow;
+  bool done;
 };
 
 void setup() {
@@ -46,14 +41,15 @@ void setup() {
   mx.control(MD_MAX72XX::INTENSITY, LED_INTENSITY);
   mx.clear();
 
-  // Draw filled sand top
+  // Draw initial filled top
   for (uint8_t r = 0; r < 8; r++) {
     for (uint8_t c = 0; c < NUM_COLS; c++) {
       bool on = filledTop[r] & (1 << c);
       mx.setPoint(r, c, on);
     }
   }
-  // Draw outline bottom
+
+  // Draw static outline bottom
   for (uint8_t r = 0; r < 8; r++) {
     uint8_t row = r + 8;
     for (uint8_t c = 0; c < NUM_COLS; c++) {
@@ -64,6 +60,17 @@ void setup() {
 }
 
 void loop() {
+  // Run 1st animation
+  runAnimation(trailTop1, trailBottom1, finalTop1);
+  delay(500);
+
+  // === Add more if needed ===
+   runAnimation(trailTop2, trailBottom2, finalTop2);
+
+  while (true); // Stop repeating
+}
+
+void runAnimation(const uint8_t* trailTop, const uint8_t* trailBottom, const uint8_t* finalTop) {
   // === Find trickle points ===
   uint8_t srcRow = 0, srcCol = 0;
   for (uint8_t r = 0; r < 8; r++) {
@@ -76,23 +83,26 @@ void loop() {
     }
   }
 
-  uint8_t dstRow = 0, dstCol = 0;
+  // Find all grains
+  Grain grains[8];
+  uint8_t grainCount = 0;
+
   for (uint8_t r = 0; r < 8; r++) {
     uint8_t diff = trailBottom[r] ^ outlineBottom[r];
     for (uint8_t c = 0; c < NUM_COLS; c++) {
       if (diff & (1 << c)) {
-        dstRow = r + 8;
-        dstCol = c;
+        grains[grainCount].dstRow = r + 8;
+        grains[grainCount].dstCol = c;
+        grains[grainCount].currentRow = 8; // Start row
+        grains[grainCount].done = false;
+        grainCount++;
       }
     }
   }
 
   mx.setPoint(srcRow, srcCol, false);
 
-  // === Non-blocking loop ===
-  uint8_t trickleRow = 8;
-  uint8_t slideRow = srcRow;
-
+  // Non-blocking trickle + slide
   uint32_t lastTrickleTime = millis();
   uint32_t lastSlideTime = millis();
   uint32_t startTime = millis();
@@ -107,52 +117,66 @@ void loop() {
   while (!trickleDone || !slideDone) {
     uint32_t now = millis();
 
-    // Bottom trickle step
+    // Trickling multiple grains
     if (!trickleDone && now - lastTrickleTime >= 200) {
-      uint8_t localRow = trickleRow - 8;
-      bool isOutline = (outlineBottom[localRow] & (1 << dstCol));
-// Turn ON the current trickle pixel
-if (!isOutline) {
-  mx.setPoint(trickleRow % 8, dstCol + (trickleRow / 8) * 8, true);
-}
+      trickleDone = true; // Assume done, flip false if any not done
+      for (uint8_t i = 0; i < grainCount; i++) {
+        if (grains[i].done) continue;
 
-// Turn OFF the previous pixel (only if not first)
-if (trickleRow > 8) {
-  uint8_t prevRow = trickleRow - 1;
-  uint8_t localPrevRow = prevRow - 8;
-  bool prevIsOutline = outlineBottom[localPrevRow] & (1 << dstCol);
-  if (!prevIsOutline) {
-    mx.setPoint(prevRow % 8, dstCol + (prevRow / 8) * 8, false);
-  }
-}
-      trickleRow++;
+        uint8_t row = grains[i].currentRow;
+        uint8_t dstRow = grains[i].dstRow;
+        uint8_t dstCol = grains[i].dstCol;
+
+        uint8_t localRow = row - 8;
+        bool isOutline = (outlineBottom[localRow] & (1 << dstCol));
+        if (!isOutline) {
+          mx.setPoint(row % 8, dstCol + (row / 8) * 8, true);
+        }
+
+        if (row > 8) {
+          uint8_t prevRow = row - 1;
+          uint8_t localPrevRow = prevRow - 8;
+          bool prevIsOutline = outlineBottom[localPrevRow] & (1 << dstCol);
+          if (!prevIsOutline) {
+            mx.setPoint(prevRow % 8, dstCol + (prevRow / 8) * 8, false);
+          }
+        }
+
+        if (row >= dstRow) {
+          grains[i].done = true;
+          mx.setPoint(dstRow % 8, dstCol + (dstRow / 8) * 8, true);
+        } else {
+          grains[i].currentRow++;
+          trickleDone = false;
+        }
+      }
       lastTrickleTime = now;
-      if (trickleRow > dstRow) trickleDone = true;
     }
 
-    // Start slide after 200ms
-    if (!slideStarted && now - startTime >= 300) {
+    // Start slide after small delay
+    if (!slideStarted && now - startTime >= 200) {
       slideStarted = true;
     }
 
-    // Slide step
+    // Slide top part
     if (slideStarted && !slideDone && now - lastSlideTime >= 200) {
-      if (slideRow > 0) {
-        if (!(outlineTop[slideRow] & (1 << srcCol)) && !(outlineTop[slideRow - 1] & (1 << srcCol))) {
-          bool aboveOn = tempTop[slideRow - 1] & (1 << srcCol);
+      if (srcRow > 0) {
+        if (!(outlineTop[srcRow] & (1 << srcCol)) && !(outlineTop[srcRow - 1] & (1 << srcCol))) {
+          bool aboveOn = tempTop[srcRow - 1] & (1 << srcCol);
           if (aboveOn) {
-            tempTop[slideRow] |= (1 << srcCol);
-            tempTop[slideRow - 1] &= ~(1 << srcCol);
+            tempTop[srcRow] |= (1 << srcCol);
+            tempTop[srcRow - 1] &= ~(1 << srcCol);
           }
         }
-        // Draw
+
         for (uint8_t r = 0; r < 8; r++) {
           for (uint8_t c = 0; c < NUM_COLS; c++) {
             bool on = tempTop[r] & (1 << c);
             mx.setPoint(r, c, on);
           }
         }
-        slideRow--;
+
+        srcRow--;
         lastSlideTime = now;
       } else {
         slideDone = true;
@@ -167,6 +191,4 @@ if (trickleRow > 8) {
       mx.setPoint(r, c, on);
     }
   }
-
-  while (true);
 }
