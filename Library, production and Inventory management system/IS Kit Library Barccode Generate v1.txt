@@ -1,0 +1,93 @@
+function generateBarcodes() {
+  const EXTRA_COUNT = 10; // Customize this as needed
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const isKitSheet = ss.getSheetByName("IS Kit");
+  const contentSheet = ss.getSheetByName("Kit Content");
+  const barcodeLogSheet = ss.getSheetByName("Barcode Log");
+
+  // 1. Get kit counts from IS Kit tab
+  const kitData = isKitSheet.getRange("A2:B8").getValues();
+  const kitCountMap = {};
+  kitData.forEach(row => {
+    const kit = row[0]?.trim();
+    const count = Number(row[1]);
+    if (kit) kitCountMap[kit] = count;
+  });
+
+  // 2. Read existing Barcode Log and find last '-----'
+  const logData = barcodeLogSheet.getDataRange().getValues();
+  let appendStartRow = 1;
+  let lastRow = logData.length;
+  for (let i = logData.length - 1; i >= 0; i--) {
+    if (logData[i][0] === "-----") {
+      appendStartRow = i + 2; // Next row after last separator
+      break;
+    }
+  }
+
+  // 3. Build current max suffix per barcode prefix
+  const maxSuffixMap = {}; // { 'ISEL-0002': 50 }
+  logData.forEach(row => {
+    const val = row[0];
+    if (typeof val === "string" && val.includes("-")) {
+      const parts = val.split("-");
+      if (parts.length === 3 && /^\d+$/.test(parts[2])) {
+        const prefix = `${parts[0]}-${parts[1]}`;
+        const suffix = parseInt(parts[2], 10);
+        if (!maxSuffixMap[prefix] || suffix > maxSuffixMap[prefix]) {
+          maxSuffixMap[prefix] = suffix;
+        }
+      }
+    }
+  });
+
+  // 4. Read Kit Content data and accumulate total quantities
+  const contentData = contentSheet.getDataRange().getValues();
+  const headers = contentData.shift();
+  const kitIndex = headers.indexOf("Kit");
+  const barcodeIndex = headers.indexOf("Barcode");
+  const qtyIndex = headers.indexOf("Qty");
+
+  let currentKit = null;
+  const barcodeTotals = {}; // { 'ISEL-0002': totalQty }
+
+  contentData.forEach(row => {
+    const barcodeRaw = row[barcodeIndex];
+    const qty = Number(row[qtyIndex]) || 0;
+    const kitName = row[kitIndex];
+
+    if (kitName) currentKit = kitName.trim();
+    if (!barcodeRaw || !currentKit || qty === 0) return;
+
+    const baseBarcode = barcodeRaw.split("-").slice(0, 2).join("-");
+    const kitCount = kitCountMap[currentKit] || 0;
+    const rowTotal = qty * kitCount;
+
+    if (!barcodeTotals[baseBarcode]) {
+      barcodeTotals[baseBarcode] = 0;
+    }
+    barcodeTotals[baseBarcode] += rowTotal;
+  });
+
+  // 5. Add extras only once per barcode
+  Object.keys(barcodeTotals).forEach(prefix => {
+    barcodeTotals[prefix] += EXTRA_COUNT;
+  });
+
+  // 6. Generate new barcodes starting from previous max
+  const newBarcodes = [];
+  Object.entries(barcodeTotals).forEach(([prefix, totalQty]) => {
+    const start = (maxSuffixMap[prefix] || 0) + 1;
+    for (let i = 0; i < totalQty; i++) {
+      const suffix = String(start + i).padStart(4, "0");
+      newBarcodes.push([`${prefix}-${suffix}`]);
+    }
+    newBarcodes.push([""]); // blank row between sets
+  });
+
+  newBarcodes.push(["-----"]); // final separator
+
+  // 7. Write to Barcode Log without clearing existing content
+  barcodeLogSheet.getRange(appendStartRow, 1, newBarcodes.length, 1).setValues(newBarcodes);
+}

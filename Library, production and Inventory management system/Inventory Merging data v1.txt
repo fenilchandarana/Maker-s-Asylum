@@ -1,0 +1,557 @@
+function processAllData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const scanSheet = ss.getSheetByName("Scan-IT to Office");
+  const referenceSheet = ss.getSheetByName("Reference");
+  const inSheet = ss.getSheetByName("IN");
+  const outSheet = ss.getSheetByName("OUT");
+  const liveStockSheet = ss.getSheetByName("Live Stock");
+  const qcSheet = ss.getSheetByName("Quality Check");
+  const packsSheet = ss.getSheetByName("Packs");
+  const livePacksSheet = ss.getSheetByName("Live Packs");
+  const isKitSheet = ss.getSheetByName("IS Kit");
+  const qcFailSheet = ss.getSheetByName("QC Fail");
+
+  const scanData = scanSheet.getDataRange().getValues();
+  const referenceData = referenceSheet.getDataRange().getValues();
+
+  const skuToProduct = {};
+  const barcodeToSKU = {};
+  const packQuantities = {};
+  const packPrefixCount = {};
+
+  for (let i = 1; i < referenceData.length; i++) {
+    const sku = referenceData[i][1];
+    const barcode = referenceData[i][2];
+    const product = referenceData[i][3];
+    const qtyInPack = referenceData[i][4];
+    const barcodePrefix = barcode.split("-").slice(0, 2).join("-");
+    skuToProduct[sku] = product;
+    barcodeToSKU[barcodePrefix] = sku;
+    if (qtyInPack && !isNaN(qtyInPack)) {
+      packQuantities[sku] = qtyInPack;
+    }
+  }
+
+  const seenQCBarcodes = new Set();
+  const seenPackBarcodes = new Set();
+  const seenKitBarcodes = new Set();
+
+  const groupedOut = {};
+  const groupedKit = {};
+
+  let errors = [];
+
+  for (let i = 1; i < scanData.length; i++) {
+    const [code, qty, dateTime, type, person, kitSerial] = scanData[i];
+    const rowNum = i + 1;
+    const parts = code.split("-");
+    if (!code || !type) continue;
+
+    if (type === "IN") {
+      if (parts.length === 3) {
+        errors.push(`Row ${rowNum}: IN type must use SKU, not barcode (${code}).`);
+        continue;
+      }
+      if (!skuToProduct[code]) {
+        errors.push(`Row ${rowNum}: Unknown SKU for IN (${code}).`);
+        continue;
+      }
+    } else if (type === "QC") {
+      if (parts.length !== 3) {
+        errors.push(`Row ${rowNum}: QC type must use full barcode (${code}).`);
+        continue;
+      }
+      if (seenQCBarcodes.has(code)) {
+        errors.push(`Row ${rowNum}: Duplicate barcode in QC (${code}).`);
+        continue;
+      }
+      seenQCBarcodes.add(code);
+    } else if (type === "PACK") {
+      if (parts.length !== 3) {
+        errors.push(`Row ${rowNum}: PACK type must use full barcode (${code}).`);
+        continue;
+      }
+      if (!code.startsWith("ISPA")) {
+        errors.push(`Row ${rowNum}: PACK barcode must start with ISPA (${code}).`);
+        continue;
+      }
+      if (seenPackBarcodes.has(code)) {
+        errors.push(`Row ${rowNum}: Duplicate barcode in PACK (${code}).`);
+        continue;
+      }
+      seenPackBarcodes.add(code);
+    } else if (type === "KIT") {
+      if (parts.length !== 3) {
+        errors.push(`Row ${rowNum}: KIT type must use barcode, not SKU (${code}).`);
+        continue;
+      }
+      if (seenKitBarcodes.has(code)) {
+        errors.push(`Row ${rowNum}: Duplicate barcode in KIT (${code}).`);
+        continue;
+      }
+      seenKitBarcodes.add(code);
+    }
+  }
+
+  if (errors.length > 0) {
+    errors.forEach(e => console.log(e));
+    console.log("❌ Processing aborted due to errors.");
+    return;
+  }
+
+  for (let i = 1; i < scanData.length; i++) {
+    const [code, qty, dateTime, type, person, kitSerial] = scanData[i];
+    if (!code || !type) continue;
+    const parts = code.split("-");
+    const prefix = parts.slice(0, 2).join("-");
+    const sku = prefix;
+    const product = skuToProduct[sku] || "Unknown";
+
+    if (type === "IN") {
+      inSheet.appendRow([inSheet.getLastRow(), dateTime, code, product, qty]);
+      const liveData = liveStockSheet.getDataRange().getValues();
+      let found = false;
+      for (let j = 1; j < liveData.length; j++) {
+        if (liveData[j][1] === code) {
+          liveStockSheet.getRange(j + 1, 4).setValue(liveData[j][3] + qty);
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        liveStockSheet.appendRow([liveStockSheet.getLastRow(), code, product, qty]);
+      }
+
+    } else if (type === "OUT") {
+      const key = `${dateTime}|${product}`;
+      if (!groupedOut[key]) {
+        groupedOut[key] = { codes: [], totalQty: 0, person };
+      }
+      groupedOut[key].codes.push(code);
+      groupedOut[key].totalQty += qty;
+
+      const liveData = liveStockSheet.getDataRange().getValues();
+      for (let j = 1; j < liveData.length; j++) {
+        if (liveData[j][1] === sku) {  // Match by SKU, not full barcode
+          const currentQty = Number(liveData[j][3]) || 0;
+          liveStockSheet.getRange(j + 1, 4).setValue(currentQty - qty);
+          break;
+        }
+      }
+
+
+    } else if (type === "QC") {
+      qcSheet.appendRow([qcSheet.getLastRow(), dateTime, code, product, person, ""]);
+
+    } else if (type === "QC FAIL") {
+      // Find product name from Reference sheet by SKU
+      const ref = referenceData.find(r => r[1] === code); // col 1 = SKU
+      const productName = ref ? ref[3] : '';               // col 3 = Product
+
+      // Append to QC Fail sheet
+      qcFailSheet.appendRow([
+        qcFailSheet.getLastRow(), // Sr no
+        dateTime,                 // Date
+        code,                     // SKU
+        productName,              // Product
+        person,                   // Person
+        qty                       // Qty
+      ]);
+
+
+    } else if (type === "PACK") {
+      packsSheet.appendRow([packsSheet.getLastRow(), dateTime, code, qty, person]);
+      const liveData = livePacksSheet.getDataRange().getValues();
+      let found = false;
+      for (let j = 1; j < liveData.length; j++) {
+        if (liveData[j][1] === prefix) {
+          livePacksSheet.getRange(j + 1, 3).setValue(liveData[j][2] + qty);
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        livePacksSheet.appendRow([livePacksSheet.getLastRow(), prefix, qty]);
+      }
+
+    } else if (type === "KIT") {
+      if (sku.startsWith("ISPA")) {
+        if (!packPrefixCount[sku]) packPrefixCount[sku] = 0;
+        packPrefixCount[sku] += qty;
+
+        const packSKUs = referenceData.filter(row => row[2].startsWith(sku)).map(row => ({
+          sku: row[1],
+          product: row[3],
+          qtyInPack: row[4]
+        }));
+
+        for (const item of packSKUs) {
+          const totalQty = item.qtyInPack * qty;
+
+          const kitLiveData = isKitSheet.getDataRange().getValues();
+          let merged = false;
+
+          for (let i = 1; i < kitLiveData.length; i++) {
+            const existingDate = kitLiveData[i][1];
+            const existingSKU = kitLiveData[i][3];
+            const existingProduct = kitLiveData[i][5];
+            const formattedExistingDate = Utilities.formatDate(new Date(existingDate), Session.getScriptTimeZone(), "dd-MM-yyyy");
+            const formattedCurrentDate = Utilities.formatDate(new Date(dateTime), Session.getScriptTimeZone(), "dd-MM-yyyy");
+
+            if (formattedExistingDate === formattedCurrentDate && existingSKU === item.sku && existingProduct === item.product) {
+              const existingSerials = kitLiveData[i][2];
+              const existingCodes = kitLiveData[i][4];
+              const existingQty = Number(kitLiveData[i][6]);
+              const existingPersons = kitLiveData[i][7];
+
+              const newSerialsList = existingSerials ? existingSerials.split('\n') : [];
+              if (!newSerialsList.includes(kitSerial)) newSerialsList.push(kitSerial);
+              const newSerials = newSerialsList.join('\n');
+
+              const newCodes = existingCodes ? `${existingCodes}\n${code}` : code;
+
+              const newPersonsList = existingPersons ? existingPersons.split('\n') : [];
+              if (!newPersonsList.includes(person)) newPersonsList.push(person);
+              const newPersons = newPersonsList.join('\n');
+
+              isKitSheet.getRange(i + 1, 3).setValue(newSerials);   // Kit Serial (Col C)
+              isKitSheet.getRange(i + 1, 5).setValue(newCodes);     // Barcode (Col E)
+              isKitSheet.getRange(i + 1, 7).setValue(existingQty + totalQty); // Qty (Col G)
+              isKitSheet.getRange(i + 1, 8).setValue(newPersons);   // Person (Col H)
+              merged = true;
+              break;
+            }
+          }
+
+          if (!merged) {
+            isKitSheet.appendRow([isKitSheet.getLastRow(), dateTime, kitSerial, item.sku, code, item.product, totalQty, person]);
+          }
+
+          const liveData = liveStockSheet.getDataRange().getValues();
+          for (let j = 1; j < liveData.length; j++) {
+            if (liveData[j][1] === item.sku) {
+              liveStockSheet.getRange(j + 1, 4).setValue(liveData[j][3] - totalQty);
+              break;
+            }
+          }
+
+          // Don't add OUT entry for KIT type
+        }
+
+
+        const packData = packsSheet.getDataRange().getValues();
+        for (let j = 1; j < packData.length; j++) {
+          if (packData[j][2] === code) {
+            packsSheet.getRange(j + 1, 6).setValue(kitSerial);
+            break;
+          }
+        }
+
+      } else {
+        const key = `${dateTime}|${product}|${kitSerial}`;
+        if (!groupedKit[key]) {
+          groupedKit[key] = {
+            codes: [],
+            skus: [],
+            serials: [],
+            persons: [],
+            totalQty: 0
+          };
+        }
+        groupedKit[key].codes.push(code);
+        groupedKit[key].skus.push(sku);
+        groupedKit[key].serials.push(kitSerial);
+        groupedKit[key].persons.push(person);
+        groupedKit[key].totalQty += qty;
+
+
+        const liveData = liveStockSheet.getDataRange().getValues();
+        for (let j = 1; j < liveData.length; j++) {
+          if (liveData[j][1] === sku) {
+            liveStockSheet.getRange(j + 1, 4).setValue(liveData[j][3] - qty);
+            break;
+          }
+        }
+      }
+
+    }
+  }
+
+  // Write grouped OUT entries
+  for (const key in groupedOut) {
+    const [dateTime, product] = key.split("|");
+    const entry = groupedOut[key];
+    const combinedCodes = entry.codes.join("\n");
+const formattedDate = Utilities.formatDate(parseDateDMY(dateTime), Session.getScriptTimeZone(), "dd-MM-yyyy");
+
+    const liveData = outSheet.getDataRange().getValues();
+    let found = false;
+
+    for (let i = 1; i < liveData.length; i++) {
+      const existingDate = liveData[i][1];
+      const existingProduct = liveData[i][3];
+
+      const formattedExistingDate = Utilities.formatDate(new Date(existingDate), Session.getScriptTimeZone(), "dd-MM-yyyy");
+
+      if (formattedExistingDate === formattedDate && existingProduct === product) {
+        const existingCodes = liveData[i][2];
+        const existingQty = liveData[i][4];
+        const existingPerson = liveData[i][5];
+
+        const newCodes = existingCodes ? `${existingCodes}\n${combinedCodes}` : combinedCodes;
+        const newQty = Number(existingQty) + entry.totalQty;
+        const newPerson = existingPerson ? `${existingPerson}, ${entry.person}` : entry.person;
+
+        outSheet.getRange(i + 1, 3).setValue(newCodes);   // Barcode (Col C)
+        outSheet.getRange(i + 1, 4).setValue(product);    // Product (Col D)
+        outSheet.getRange(i + 1, 5).setValue(newQty);     // Qty (Col E)
+        outSheet.getRange(i + 1, 6).setValue(newPerson);  // Person (Col F)
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      outSheet.appendRow([
+        outSheet.getLastRow(),     // Sr no
+        formattedDate,             // Date
+        combinedCodes,             // Barcode
+        product,                   // Product
+        entry.totalQty,            // Qty
+        entry.person               // Person
+      ]);
+    }
+  }
+
+
+
+// Write grouped KIT entries
+for (const key in groupedKit) {
+  const [dateTime, product] = key.split("|");
+  const entry = groupedKit[key];
+
+  // Combine SKUs uniquely with new lines
+  const combinedSKUs = [...new Set(entry.skus)].join("\n");
+  // Combine serials uniquely with new lines (no commas)
+  const combinedSerials = [...new Set(entry.serials)].join("\n");
+  // Combine persons uniquely with new lines
+  const combinedPersons = [...new Set(entry.persons)].join("\n");
+
+  // Combine barcodes uniquely with new lines (important!)
+  const combinedCodes = [...new Set(entry.codes)].join("\n");
+
+  const formattedDate = Utilities.formatDate(new Date(dateTime), Session.getScriptTimeZone(), "dd-MM-yyyy");
+
+  const liveData = isKitSheet.getDataRange().getValues();
+  let found = false;
+
+  for (let i = 1; i < liveData.length; i++) {
+    const existingDate = liveData[i][1];
+    const existingSKU = liveData[i][3];
+    const formattedExistingDate = Utilities.formatDate(new Date(existingDate), Session.getScriptTimeZone(), "dd-MM-yyyy");
+
+    // Merge ONLY if both SKU and Date match exactly
+if (formattedExistingDate === formattedDate && multilineStringsEqualOrOverlap(existingSKU, combinedSKUs)) {
+      // Existing fields
+      const existingSerials = liveData[i][2];
+      const existingCodes = liveData[i][4];
+      const existingQty = liveData[i][6];
+      const existingPersons = liveData[i][7];
+
+      // Merge serials and persons uniquely with new lines
+      const newSerials = existingSerials ? [...new Set(existingSerials.split("\n").concat(combinedSerials.split("\n")))].join("\n") : combinedSerials;
+      const newCodes = existingCodes ? [...new Set(existingCodes.split("\n").concat(combinedCodes.split("\n")))].join("\n") : combinedCodes;
+      const newQty = Number(existingQty) + entry.totalQty;
+      const newPersons = existingPersons ? [...new Set(existingPersons.split("\n").concat(combinedPersons.split("\n")))].join("\n") : combinedPersons;
+
+      // Update the row
+      isKitSheet.getRange(i + 1, 3).setValue(newSerials);   // Kit Serial (Col C)
+      isKitSheet.getRange(i + 1, 4).setValue(combinedSKUs); // SKU (Col D)
+      isKitSheet.getRange(i + 1, 5).setValue(newCodes);     // Barcode (Col E)
+      isKitSheet.getRange(i + 1, 6).setValue(product);      // Product (Col F)
+      isKitSheet.getRange(i + 1, 7).setValue(newQty);       // Qty (Col G)
+      isKitSheet.getRange(i + 1, 8).setValue(newPersons);   // Person (Col H)
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    // Append new row if no matching SKU + Date found
+    isKitSheet.appendRow([
+      isKitSheet.getLastRow(),
+      formattedDate,
+      combinedSerials,
+      combinedSKUs,
+      combinedCodes,
+      product,
+      entry.totalQty,
+      combinedPersons
+    ]);
+  }
+}
+
+
+
+
+
+// Highlight Live Stock qtys using thresholds from Reference tab
+const liveLastRow = liveStockSheet.getLastRow();
+let liveData = [];
+if (liveLastRow > 1) {
+  liveData = liveStockSheet.getRange(2, 1, liveLastRow - 1, liveStockSheet.getLastColumn()).getValues();
+}
+
+const skuToThresholds = {};
+for (let i = 1; i < referenceData.length; i++) {
+  const sku = referenceData[i][1];
+  const inStock = Number(referenceData[i][5]);
+  const lowStock = Number(referenceData[i][6]);
+  if (!isNaN(inStock) && !isNaN(lowStock)) {
+    skuToThresholds[sku] = { green: inStock, orange: lowStock };
+  }
+}
+
+for (let i = 0; i < liveData.length; i++) {
+  const sku = liveData[i][1];
+  const qty = Number(liveData[i][3]);
+  const thresholds = skuToThresholds[sku];
+  if (!thresholds) continue;
+  const cell = liveStockSheet.getRange(i + 2, 4);
+  if (qty >= thresholds.green) {
+    cell.setBackground("green");
+  } else if (qty >= thresholds.orange) {
+    cell.setBackground("orange");
+  } else {
+    cell.setBackground("red");
+  }
+}
+
+// ----- Calculate live kit count -----
+const isKitLastRow = isKitSheet.getLastRow();
+let isKitData = [];
+if (isKitLastRow > 1) {
+  isKitData = isKitSheet.getRange(2, 3, isKitLastRow - 1, 1).getValues(); // Column C Kit Serial
+}
+
+const allKitSerials = isKitData.flatMap(cell =>
+  (cell[0] ? cell[0].toString().split(/\n|,/) : [])
+    .map(k => k.trim())
+    .filter(k => k.startsWith("KIT"))
+);
+
+const uniqueKits = [...new Set(allKitSerials)];
+
+const outLastRow = outSheet.getLastRow();
+let outData = [];
+if (outLastRow > 1) {
+  outData = outSheet.getRange(2, 3, outLastRow - 1, 1).getValues();
+}
+
+const allOutSerials = outData.flatMap(cell =>
+  (cell[0] ? cell[0].toString().split(/\n|,/) : [])
+    .map(k => k.trim())
+    .filter(k => k.startsWith("KIT"))
+);
+
+let kitsOutSet = new Set(allOutSerials);
+
+let kitsOut = 0;
+kitsOutSet.forEach(code => {
+  if (uniqueKits.includes(code)) kitsOut++;
+});
+
+let liveKits = uniqueKits.length - kitsOut;
+if (liveKits < 0) liveKits = 0;
+
+liveStockSheet.getRange("F2").setValue(liveKits);
+
+
+updateKitLiveStock();
+
+// Clear the Scan-IT to Office sheet data except header
+const scanLastRow = scanSheet.getLastRow();
+const scanLastCol = scanSheet.getLastColumn();
+if (scanLastRow > 1) {
+  scanSheet.getRange(2, 1, scanLastRow - 1, scanLastCol).clearContent();
+}
+
+console.log("✅ Processing completed successfully.");
+
+
+
+}
+
+function updateKitLiveStock() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var isKitSheet = ss.getSheetByName("IS Kit");
+  var outSheet = ss.getSheetByName("OUT");
+  var liveStockSheet = ss.getSheetByName("Live Stock");
+
+  var isKitLastRow = isKitSheet.getLastRow();
+  var isKitData = [];
+  if (isKitLastRow > 1) {
+    // Get all KIT serial cells (column C)
+    isKitData = isKitSheet.getRange(2, 3, isKitLastRow - 1, 1).getValues();
+  }
+
+  // Flatten and split each cell by newline, then flatten into one array
+  var allKitSerials = isKitData.flatMap(cell =>
+    (cell[0] ? cell[0].toString().split(/\n|,/) : [])
+      .map(k => k.trim())
+      .filter(k => k.startsWith("KIT"))
+  );
+
+  var uniqueKitsFromIS = new Set(allKitSerials);
+
+  var outLastRow = outSheet.getLastRow();
+  var outData = [];
+  if (outLastRow > 1) {
+    outData = outSheet.getRange(2, 3, outLastRow - 1, 1).getValues();
+  }
+
+  // Same treatment for OUT serials
+  var allOutSerials = outData.flatMap(cell =>
+    (cell[0] ? cell[0].toString().split(/\n|,/) : [])
+      .map(k => k.trim())
+      .filter(k => k.startsWith("KIT"))
+  );
+
+  var uniqueKitsFromOUT = new Set(allOutSerials);
+
+  var liveStockCount = uniqueKitsFromIS.size - uniqueKitsFromOUT.size;
+  if (liveStockCount < 0) liveStockCount = 0;
+
+  liveStockSheet.getRange("F2").setValue(liveStockCount);
+}
+
+
+function formatDateSafe(dateValue) {
+  if (!dateValue) return "";
+  try {
+    return Utilities.formatDate(new Date(dateValue), Session.getScriptTimeZone(), "dd-MM-yyyy");
+  } catch (e) {
+    return "";
+  }
+}
+
+function parseDateDMY(dateStr) {
+  // Expects dateStr in "DD-MM-YYYY"
+  const parts = dateStr.split("-");
+  if (parts.length !== 3) return new Date(NaN);
+  const day = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10) - 1; // JS months start at 0
+  const year = parseInt(parts[2], 10);
+  return new Date(year, month, day);
+}
+
+function multilineStringsEqualOrOverlap(str1, str2) {
+  const arr1 = str1 ? str1.split('\n').map(s => s.trim()).filter(s => s) : [];
+  const arr2 = str2 ? str2.split('\n').map(s => s.trim()).filter(s => s) : [];
+  
+  // Return true if they are exactly equal as sets
+  if (arr1.length !== arr2.length) return false;
+  const set1 = new Set(arr1);
+  return arr2.every(s => set1.has(s));
+}
+

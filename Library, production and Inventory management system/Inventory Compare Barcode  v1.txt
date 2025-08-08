@@ -1,0 +1,69 @@
+function checkKitBarcodes() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const scanSheet = ss.getSheetByName("Scan-IT to Office");
+  const kitContentSheet = ss.getSheetByName("Kit Content");
+  
+  const scanData = scanSheet.getDataRange().getValues();
+  const kitContentData = kitContentSheet.getDataRange().getValues();
+  
+  // Build expected quantities per prefix from Kit Content (sum if repeated prefix)
+  const expectedData = {};
+  for (let i = 1; i < kitContentData.length; i++) {
+    const prefixRaw = kitContentData[i][0];
+    const expectedQtyRaw = kitContentData[i][2];
+    if (!prefixRaw || expectedQtyRaw === "" || expectedQtyRaw === null) continue;
+    const expectedQty = Number(expectedQtyRaw);
+    if (isNaN(expectedQty)) continue;
+    const prefix = prefixRaw.toString().split("-").slice(0, 2).join("-");
+    expectedData[prefix] = (expectedData[prefix] || 0) + expectedQty;
+  }
+  
+  // Build scanned quantities per kitSerial and prefix (sum qtys)
+  const scannedData = {};
+  for (let i = 1; i < scanData.length; i++) {
+    const [barcode, qtyRaw, , type, , kitSerial] = scanData[i];
+    if (type !== "KIT" || !barcode || !kitSerial) continue;
+    
+    const qty = Number(qtyRaw);
+    if (isNaN(qty) || qty <= 0) continue;
+    
+    const prefix = barcode.toString().split("-").slice(0, 2).join("-");
+    
+    if (!scannedData[kitSerial]) scannedData[kitSerial] = {};
+    scannedData[kitSerial][prefix] = (scannedData[kitSerial][prefix] || 0) + qty;
+  }
+  
+  const missingReports = [];
+  
+  // For each kit serial in scanned data
+  for (const kitSerial in scannedData) {
+    const prefixesInKit = scannedData[kitSerial];
+    
+    // Check for missing prefixes
+    for (const expectedPrefix in expectedData) {
+      if (!(expectedPrefix in prefixesInKit)) {
+        missingReports.push(`Barcode prefix ${expectedPrefix} missing in ${kitSerial}`);
+      }
+    }
+    
+    // Check for unexpected prefixes or quantity mismatches
+    for (const prefix in prefixesInKit) {
+      if (!(prefix in expectedData)) {
+        missingReports.push(`Unexpected barcode prefix ${prefix} found in ${kitSerial}`);
+      } else {
+        const scannedQty = prefixesInKit[prefix];
+        const expectedQty = expectedData[prefix];
+        if (scannedQty !== expectedQty) {
+          missingReports.push(`Quantity mismatch for prefix ${prefix} in ${kitSerial}: expected ${expectedQty}, found ${scannedQty}`);
+        }
+      }
+    }
+  }
+  
+  if (missingReports.length > 0) {
+    missingReports.forEach(report => console.log(report));
+    throw new Error("❌ KIT barcode or quantity issues found. Processing aborted.");
+  }
+  
+  console.log("✅ All KIT barcodes and quantities match expected values.");
+}

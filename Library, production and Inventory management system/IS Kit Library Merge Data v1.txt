@@ -10,9 +10,11 @@ function aggregateInventoryData() {
   ];
 
   const destSheetName = "IS Kit";
+  // const destSheetName = "IS Kit Fabrication";
   const multiplierRange = "A2:B8";  // Sheet names and multipliers
   const outputStartCell = "B11";
   const patterns = /^(ISEL|ISGN|ISPG|ISOF|ISGP|ISEP)/;
+  // const patterns = /^(ISIF|ISIP)/;
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let outputSheet = ss.getSheetByName(destSheetName);
